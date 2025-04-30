@@ -1,0 +1,332 @@
+#include <AiEsp32RotaryEncoder.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_NeoPixel.h>
+#include <arduinoFFT.h>
+
+// buzer
+#define BUZZER_PIN 1
+
+// encoder
+#define ROTARY_ENCODER_NOISE 10
+#define ROTARY_ENCODER_A_PIN 5         // CLK (A pin)
+#define ROTARY_ENCODER_B_PIN 6         // DT (B pin)
+#define ROTARY_ENCODER_BUTTON_PIN 7    // SW (button pin)
+#define ROTARY_ENCODER_VCC_PIN -1      // VCC if microcontroller VCC (then set ROTARY_ENCODER_VCC_PIN -1)
+#define ROTARY_ENCODER_STEPS 4         // depending on your encoder - try 1,2 or 4 to get expected behaviour
+#define ROTARY_ENCODER_NOISE 10
+#define ROTARY_ENCODER_MIN_VALUE 0
+#define ROTARY_ENCODER_MAX_VALUE 10
+
+AiEsp32RotaryEncoder rotaryEncoder = AiEsp32RotaryEncoder(ROTARY_ENCODER_B_PIN, ROTARY_ENCODER_A_PIN, ROTARY_ENCODER_BUTTON_PIN, ROTARY_ENCODER_VCC_PIN, ROTARY_ENCODER_STEPS);
+
+// oled
+#define OLED_RESET -1
+#define OLED_WIDTH 128
+#define OLED_HEIGHT 32
+
+Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
+
+// LED strip configuration
+#define LED_PIN 2
+#define NUM_LEDS 64
+Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+// Microphone and FFT
+#define MIC_PIN 0
+#define FFT_SAMPLES 128        // Number of FFT samples (must be a power of 2)
+#define FFT_SAMPLING_FREQ 10000 // Sampling frequency in Hz
+double vReal[FFT_SAMPLES];     // Real part of FFT
+double vImag[FFT_SAMPLES];     // Imaginary part of FFT
+ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, FFT_SAMPLES, FFT_SAMPLING_FREQ);
+
+int encoderMode = 0;
+int currentBrightnessIndex = 0;
+int currentTemperatureIndex = 0;
+int currentEqualizerIndex = 0;
+int brightness = 10;
+const int colorTemperatures[] = {1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000, 6500};
+
+void IRAM_ATTR readEncoderISR() {
+  rotaryEncoder.readEncoder_ISR();
+}
+
+void setup() {
+  delay(2000);
+  Serial.begin(115200);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("SSD1306 allocation failed");
+    for (;;)
+      ;
+  }
+  
+  // oled 132x28
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  displayLEDprops();
+  display.display();
+
+  // rotary encoder
+  rotaryEncoder.begin();
+  rotaryEncoder.setup(readEncoderISR);
+  rotaryEncoder.setBoundaries(ROTARY_ENCODER_MIN_VALUE, ROTARY_ENCODER_MAX_VALUE, true);  //minValue, maxValue, circleValues true|false (when max go to min and vice versa)
+
+  /*Rotary acceleration introduced 25.2.2021.
+   * in case range to select is huge, for example - select a value between 0 and 1000 and we want 785
+   * without acceleration you need long time to get to that number
+   * Using acceleration, faster you turn, faster will the value raise.
+   * For fine tuning slow down.
+   */
+  rotaryEncoder.disableAcceleration();  //acceleration is now enabled by default - disable if you dont need it
+                                        //rotaryEncoder.setAcceleration(250); //or set the value - larger number = more acceleration; 0 or 1 means disabled acceleration
+  rotaryEncoder.setEncoderValue(0);
+
+  // LEDS WS2812b
+  strip.begin();
+  strip.setBrightness(brightness);
+  strip.show();
+  displayTemperature();
+
+  // Mic
+  pinMode(MIC_PIN, INPUT);
+
+  // buzer
+  pinMode(BUZZER_PIN, OUTPUT);
+}
+
+void loop() {
+  rotaryLoop();
+
+  if (currentEqualizerIndex) {
+    buildEqualizer();
+  } else {
+    displayTemperature();
+  }
+
+  displayLEDprops();
+}
+
+void buzzTimes(int counter, int freq = 750) {
+   for (int iterator = 0; iterator < counter; iterator++) {
+    tone(BUZZER_PIN, freq, 50);
+    delay(250); 
+   }
+}
+
+void oledLogs(String value) {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println(value);
+  display.display();
+}
+
+void displayLEDprops() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.print(String(encoderMode == 0 ? "> " : " "));
+  display.println("brightness: " + String(brightness));
+  display.print(String(encoderMode == 1 ? "> " : " "));
+  display.println("temp gamma: " + String(colorTemperatures[currentTemperatureIndex]));
+  display.print(String(encoderMode == 2 ? "> " : " "));
+  display.println("equalizer: " + String(currentEqualizerIndex));
+  display.display();
+}
+
+void displayTemperature() {
+  // Get RGB values for the selected temperature
+  uint32_t color = colorTemperatureToRGB(colorTemperatures[currentTemperatureIndex]);
+  // Set all LEDs to this color
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, color);
+  }
+  strip.show();
+}
+
+// Convert color temperature in Kelvin to RGB
+uint32_t colorTemperatureToRGB(int kelvin) {
+  float temp = kelvin / 100.0;
+  float red, green, blue;
+
+  // Calculate red
+  if (temp <= 66) {
+    red = 255;
+  } else {
+    red = temp - 60;
+    red = 329.698727446 * pow(red, -0.1332047592);
+    if (red < 0) red = 0;
+    if (red > 255) red = 255;
+  }
+
+  // Calculate green
+  if (temp <= 66) {
+    green = temp;
+    green = 99.4708025861 * log(green) - 161.1195681661;
+    if (green < 0) green = 0;
+    if (green > 255) green = 255;
+  } else {
+    green = temp - 60;
+    green = 288.1221695283 * pow(green, -0.0755148492);
+    if (green < 0) green = 0;
+    if (green > 255) green = 255;
+  }
+
+  // Calculate blue
+  if (temp >= 66) {
+    blue = 255;
+  } else {
+    if (temp <= 19) {
+      blue = 0;
+    } else {
+      blue = temp - 10;
+      blue = 138.5177312231 * log(blue) - 305.0447927307;
+      if (blue < 0) blue = 0;
+      if (blue > 255) blue = 255;
+    }
+  }
+
+  return strip.Color((uint8_t)red, (uint8_t)green, (uint8_t)blue);
+}
+
+
+void rotaryOnButtonClick() {
+  static unsigned long lastTimePressed = 0;
+
+  if (millis() - lastTimePressed < ROTARY_ENCODER_NOISE) {
+    return;
+  }
+
+  lastTimePressed = millis();
+  encoderMode = encoderMode < 2 ? encoderMode + 1 : 0;
+
+  switch (encoderMode) {
+      // Brightness
+      case (0):
+        rotaryEncoder.setEncoderValue(currentBrightnessIndex);      
+        break;
+      // Temp
+      case (1):
+        rotaryEncoder.setEncoderValue(currentTemperatureIndex);        
+        break;
+      // Equalizer
+      case (2):
+        rotaryEncoder.setEncoderValue(currentEqualizerIndex);        
+        break;
+    }
+
+    buzzTimes(encoderMode + 1);
+    displayLEDprops();    
+}
+
+void rotaryLoop() {
+  if (rotaryEncoder.isEncoderButtonClicked()) {
+    rotaryOnButtonClick();
+  } else if (rotaryEncoder.encoderChanged()) {
+    int encoderValue = rotaryEncoder.readEncoder();
+
+    switch (encoderMode) {
+      // Change brightness
+      case (0):
+        currentBrightnessIndex = encoderValue;
+        brightness = 10 * encoderValue;
+        strip.setBrightness(brightness);        
+        break;
+      // Change temp
+      case (1):   
+        currentTemperatureIndex = encoderValue > 10 ? 10 : encoderValue;               
+        break;
+      // Change equalizer
+      case (2):        
+        currentEqualizerIndex = encoderValue > 3 ? 3 : encoderValue; 
+        break;
+    }
+    
+    buzzTimes(1, 500);
+    displayLEDprops(); 
+  }
+}
+
+void buildEqualizer(){
+  // Capture audio samples
+  for (int i = 0; i < FFT_SAMPLES; i++) {
+    vReal[i] = analogRead(MIC_PIN); // Read microphone
+    vImag[i] = 0;                   // Imaginary part is 0 for real input
+    delayMicroseconds(1000000 / FFT_SAMPLING_FREQ); // Maintain sampling frequency
+  }
+
+  // Perform FFT
+  FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD); // Apply window function
+  FFT.compute(FFT_FORWARD);                       // Compute FFT
+  FFT.complexToMagnitude();                       // Compute magnitude spectrum
+
+  // Apply selected effect
+  switch (currentEqualizerIndex) {
+    case 1:
+      bassVisualizer();
+      break;
+    case 2:
+      trebleVisualizer();
+      break;
+    case 3:
+      fullSpectrumVisualizer();
+      break;
+  }
+}
+
+
+void bassVisualizer() {
+  int bassSum = 0;
+
+  // Analyze low frequencies (first 1/16th of spectrum)
+  for (int i = 0; i < FFT_SAMPLES / 16; i++) {
+    bassSum += vReal[i];
+  }
+
+  // Map bass sum to brightness level (0-255)
+  int brightness = map(bassSum, 0, 5000, 0, 255);
+  Serial.print("Bass Brightness: ");
+  Serial.println(brightness);
+
+  // Set all LEDs to a color based on bass level
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, strip.Color(brightness, 0, 0)); // Red for bass
+  }
+  strip.show();
+}
+
+void trebleVisualizer() {
+  int trebleSum = 0;
+
+  // Analyze high frequencies (last 1/4th of spectrum)
+  for (int i = FFT_SAMPLES / 2; i < FFT_SAMPLES; i++) {
+    trebleSum += vReal[i];
+  }
+
+  // Map treble sum to brightness level (0-255)
+  int brightness = map(trebleSum, 0, 5000, 0, 255);
+  Serial.print("Treble Brightness: ");
+  Serial.println(brightness);
+
+  // Set all LEDs to a color based on treble level
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, strip.Color(0, brightness, brightness)); // Cyan for treble
+  }
+  strip.show();
+}
+
+void fullSpectrumVisualizer() {
+  // Map frequency bins to LEDs
+  int ledsPerBin = NUM_LEDS / (FFT_SAMPLES / 2);
+  for (int i = 0; i < FFT_SAMPLES / 2; i++) {
+    int brightness = map(vReal[i], 0, 2000, 0, 255); // Map FFT bin magnitude to brightness
+    for (int j = 0; j < ledsPerBin; j++) {
+      int ledIndex = i * ledsPerBin + j;
+      if (ledIndex < NUM_LEDS) {
+        strip.setPixelColor(ledIndex, strip.Color(brightness, brightness / 2, 0)); // Orange for full spectrum
+      }
+    }
+  }
+  strip.show();
+}
