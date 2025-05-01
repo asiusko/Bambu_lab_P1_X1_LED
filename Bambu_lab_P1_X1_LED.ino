@@ -29,22 +29,43 @@ Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
 // LED strip configuration
 #define LED_PIN 2
-#define NUM_LEDS 64
+#define NUM_LEDS 48
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 // Microphone and FFT
-#define MIC_PIN 0
-#define FFT_SAMPLES 128        // Number of FFT samples (must be a power of 2)
-#define FFT_SAMPLING_FREQ 10000 // Sampling frequency in Hz
-double vReal[FFT_SAMPLES];     // Real part of FFT
-double vImag[FFT_SAMPLES];     // Imaginary part of FFT
+#define AUDIO_IN_PIN 0
+#define FFT_FILTERED_NOISE 5000
+#define FFT_AMPLITUDE 1      // Depending on your audio source level, you may need to alter this value. Can be used as a 'sensitivity' control.
+#define MAX_BANDS 16
+#define FFT_SAMPLES 256         // Number of FFT samples (must be a power of 2)
+#define FFT_SAMPLING_FREQ 12000 // Sampling frequency in Hz
+#define MAX_BAND_VALUE 16
+
+// 8 bands
+// int peak[MAX_BANDS] = { 0, 0, 0, 0, 0, 0, 0, 0};
+// int oldBandValues[MAX_BANDS] = { 0, 0, 0, 0, 0, 0, 0, 0};
+// int bandValues[MAX_BANDS] = { 0, 0, 0, 0, 0, 0, 0, 0};
+// 16 band
+int peak[MAX_BANDS] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+int oldBandValues[MAX_BANDS] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+int bandValues[MAX_BANDS] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+// 32 band
+// int peak[MAX_BANDS] =           { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+// int oldBandValues[MAX_BANDS] =  { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+// int bandValues[MAX_BANDS] =     { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+double vReal[FFT_SAMPLES];
+double vImag[FFT_SAMPLES];
+unsigned int sampling_period_us;
+unsigned long newTime;
 ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, FFT_SAMPLES, FFT_SAMPLING_FREQ);
 
-int encoderMode = 0;
-int currentBrightnessIndex = 0;
-int currentTemperatureIndex = 0;
-int currentEqualizerIndex = 0;
-int brightness = 10;
+// General variables
+int encoderMode = 3;
+int currentBrightnessIndex = 2;
+int currentTemperatureIndex = 1;
+int currentEqualizerIndex = 1;
+int currentSensitivityIndex = 1;
+int brightness = 20;
 const int colorTemperatures[] = {1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000, 6500};
 
 void IRAM_ATTR readEncoderISR() {
@@ -60,7 +81,7 @@ void setup() {
     for (;;)
       ;
   }
-  
+
   // oled 132x28
   display.clearDisplay();
   display.setTextSize(1);
@@ -91,7 +112,7 @@ void setup() {
   displayTemperature();
 
   // Mic
-  pinMode(MIC_PIN, INPUT);
+  pinMode(AUDIO_IN_PIN, INPUT);
 
   // buzer
   pinMode(BUZZER_PIN, OUTPUT);
@@ -112,7 +133,7 @@ void loop() {
 void buzzTimes(int counter, int freq = 750) {
    for (int iterator = 0; iterator < counter; iterator++) {
     tone(BUZZER_PIN, freq, 50);
-    delay(250); 
+    delay(250);
    }
 }
 
@@ -132,6 +153,8 @@ void displayLEDprops() {
   display.println("temp gamma: " + String(colorTemperatures[currentTemperatureIndex]));
   display.print(String(encoderMode == 2 ? "> " : " "));
   display.println("equalizer: " + String(currentEqualizerIndex));
+  display.print(String(encoderMode == 3 ? "> " : " "));
+  display.println("Mic sensitivity: " + String(currentSensitivityIndex));
   display.display();
 }
 
@@ -199,25 +222,28 @@ void rotaryOnButtonClick() {
   }
 
   lastTimePressed = millis();
-  encoderMode = encoderMode < 2 ? encoderMode + 1 : 0;
+  encoderMode = encoderMode < 3 ? encoderMode + 1 : 0;
 
   switch (encoderMode) {
       // Brightness
       case (0):
-        rotaryEncoder.setEncoderValue(currentBrightnessIndex);      
+        rotaryEncoder.setEncoderValue(currentBrightnessIndex);
         break;
       // Temp
       case (1):
-        rotaryEncoder.setEncoderValue(currentTemperatureIndex);        
+        rotaryEncoder.setEncoderValue(currentTemperatureIndex);
         break;
       // Equalizer
       case (2):
-        rotaryEncoder.setEncoderValue(currentEqualizerIndex);        
+        rotaryEncoder.setEncoderValue(currentEqualizerIndex);
+        break;
+      // Sensitivity
+      case (3):
+        rotaryEncoder.setEncoderValue(currentSensitivityIndex);
         break;
     }
 
     buzzTimes(encoderMode + 1);
-    displayLEDprops();    
 }
 
 void rotaryLoop() {
@@ -231,102 +257,147 @@ void rotaryLoop() {
       case (0):
         currentBrightnessIndex = encoderValue;
         brightness = 10 * encoderValue;
-        strip.setBrightness(brightness);        
+        strip.setBrightness(brightness);
         break;
       // Change temp
-      case (1):   
-        currentTemperatureIndex = encoderValue > 10 ? 10 : encoderValue;               
+      case (1):
+        currentTemperatureIndex = encoderValue > 10 ? 10 : encoderValue;
         break;
       // Change equalizer
-      case (2):        
-        currentEqualizerIndex = encoderValue > 3 ? 3 : encoderValue; 
+      case (2):
+        currentEqualizerIndex = encoderValue > 3 ? 3 : encoderValue;
+        break;
+      // Sensitivity
+      case (3):
+        currentSensitivityIndex = encoderValue;
+        currentSensitivityIndex = currentSensitivityIndex > 10 ? 10 : currentSensitivityIndex;
+        currentSensitivityIndex = currentSensitivityIndex == 0 ? 1 : currentSensitivityIndex;
         break;
     }
-    
+
     buzzTimes(1, 500);
-    displayLEDprops(); 
   }
 }
 
 void buildEqualizer(){
-  // Capture audio samples
+  for (int i = 0; i < MAX_BANDS; i++) {
+    bandValues[i] = 0;
+  }
+
+  // Sample the audio pin
   for (int i = 0; i < FFT_SAMPLES; i++) {
-    vReal[i] = analogRead(MIC_PIN); // Read microphone
-    vImag[i] = 0;                   // Imaginary part is 0 for real input
-    delayMicroseconds(1000000 / FFT_SAMPLING_FREQ); // Maintain sampling frequency
-  }
-
-  // Perform FFT
-  FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD); // Apply window function
-  FFT.compute(FFT_FORWARD);                       // Compute FFT
-  FFT.complexToMagnitude();                       // Compute magnitude spectrum
-
-  // Apply selected effect
-  switch (currentEqualizerIndex) {
-    case 1:
-      bassVisualizer();
-      break;
-    case 2:
-      trebleVisualizer();
-      break;
-    case 3:
-      fullSpectrumVisualizer();
-      break;
-  }
-}
-
-
-void bassVisualizer() {
-  int bassSum = 0;
-
-  // Analyze low frequencies (first 1/16th of spectrum)
-  for (int i = 0; i < FFT_SAMPLES / 16; i++) {
-    bassSum += vReal[i];
-  }
-
-  // Map bass sum to brightness level (0-255)
-  int brightness = map(bassSum, 0, 5000, 0, 255);
-  Serial.print("Bass Brightness: ");
-  Serial.println(brightness);
-
-  // Set all LEDs to a color based on bass level
-  for (int i = 0; i < NUM_LEDS; i++) {
-    strip.setPixelColor(i, strip.Color(brightness, 0, 0)); // Red for bass
-  }
-  strip.show();
-}
-
-void trebleVisualizer() {
-  int trebleSum = 0;
-
-  // Analyze high frequencies (last 1/4th of spectrum)
-  for (int i = FFT_SAMPLES / 2; i < FFT_SAMPLES; i++) {
-    trebleSum += vReal[i];
-  }
-
-  // Map treble sum to brightness level (0-255)
-  int brightness = map(trebleSum, 0, 5000, 0, 255);
-  Serial.print("Treble Brightness: ");
-  Serial.println(brightness);
-
-  // Set all LEDs to a color based on treble level
-  for (int i = 0; i < NUM_LEDS; i++) {
-    strip.setPixelColor(i, strip.Color(0, brightness, brightness)); // Cyan for treble
-  }
-  strip.show();
-}
-
-void fullSpectrumVisualizer() {
-  // Map frequency bins to LEDs
-  int ledsPerBin = NUM_LEDS / (FFT_SAMPLES / 2);
-  for (int i = 0; i < FFT_SAMPLES / 2; i++) {
-    int brightness = map(vReal[i], 0, 2000, 0, 255); // Map FFT bin magnitude to brightness
-    for (int j = 0; j < ledsPerBin; j++) {
-      int ledIndex = i * ledsPerBin + j;
-      if (ledIndex < NUM_LEDS) {
-        strip.setPixelColor(ledIndex, strip.Color(brightness, brightness / 2, 0)); // Orange for full spectrum
-      }
+    newTime = micros();
+    vReal[i] = analogRead(AUDIO_IN_PIN);
+    vImag[i] = 0;
+    while ((micros() - newTime) < sampling_period_us) {
+        // wait
     }
   }
+
+  // Fast Fourier Transformation
+  FFT.dcRemoval();
+  FFT.windowing(vReal, FFT_SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+  FFT.compute(vReal, vImag, FFT_SAMPLES, FFT_FORWARD);
+  FFT.complexToMagnitude(vReal, vImag, FFT_SAMPLES);
+
+  for (int i = 2; i < (FFT_SAMPLES / 2); i++) {  // Don't use sample 0 and only first FFT_SAMPLES/2 are usable.
+    if (vReal[i] > FFT_FILTERED_NOISE) {         // Add a crude noise filter
+      if (i<=5 )           bandValues[0]  += (int)vReal[i];
+      if (i>5   && i<=6  ) bandValues[1]  += (int)vReal[i];
+      if (i>6   && i<=9  ) bandValues[2]  += (int)vReal[i];
+      if (i>9   && i<=11  ) bandValues[3]  += (int)vReal[i];
+      if (i>11   && i<=15  ) bandValues[4]  += (int)vReal[i];
+      if (i>15   && i<=19  ) bandValues[5]  += (int)vReal[i];
+      if (i>19   && i<=25  ) bandValues[6]  += (int)vReal[i];
+      if (i>25   && i<=33  ) bandValues[7]  += (int)vReal[i];
+      if (i>33   && i<=44  ) bandValues[8]  += (int)vReal[i];
+      if (i>44   && i<=58  ) bandValues[9]  += (int)vReal[i];
+      if (i>58   && i<=76  ) bandValues[10]  += (int)vReal[i];
+      if (i>76   && i<=99  ) bandValues[11]  += (int)vReal[i];
+      if (i>99   && i<=131  ) bandValues[12]  += (int)vReal[i];
+      if (i>131   && i<=172  ) bandValues[13]  += (int)vReal[i];
+      if (i>172   && i<=225  ) bandValues[14]  += (int)vReal[i];
+      if (i>225             ) bandValues[15]  += (int)vReal[i];
+    }
+  }
+
+  // Process the FFT data into bar power
+  for (int band = 0; band < MAX_BANDS; band++) {
+    // Scale the bars for the display
+    if (bandValues[band] > MAX_BAND_VALUE) bandValues[band] = MAX_BAND_VALUE;
+
+    // Small amount of averaging between frames
+    bandValues[band] = ((oldBandValues[band] * 1) + bandValues[band]) / 2;
+
+    // Move peak up
+    if (bandValues[band] > peak[band]) {
+      peak[band] = min(MAX_BAND_VALUE, bandValues[band]);
+    }
+
+    // Draw bars
+    switch (currentEqualizerIndex) {
+      case 0:
+        // nope its light mode
+        break;
+      case 1:
+        rainbowEqualizer();
+        break;
+      case 2:
+        spectrumEqualizer();
+        break;
+      case 3:
+        centerEqualizer();
+        break;
+      case 4:
+        pulseEqualizer();
+        break;
+      case 5:
+        waterfallEqualizer();
+        break;
+    }
+
+    // Save oldBandValues for averaging later
+    oldBandValues[band] = bandValues[band];
+  }
+}
+
+
+void rainbowEqualizer() {
+  // TODO just example need to redo
+  int ledBands = 4;
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    int cumulativeValue = 0;
+
+    if (i < 10) {
+      cumulativeValue = bandValues[0] + bandValues[1] + bandValues[2] + bandValues[3];
+    } else if (i < 20) {
+      cumulativeValue = bandValues[4] + bandValues[5] + bandValues[6] + bandValues[7];
+    } else if (i < 30) {
+      cumulativeValue = bandValues[8] + bandValues[9] + bandValues[10] + bandValues[11];
+    } else {
+      cumulativeValue = bandValues[12] + bandValues[13] + bandValues[14] + bandValues[15];
+    }
+
+    cumulativeValue = cumulativeValue * currentSensitivityIndex;
+    if (cumulativeValue > MAX_BAND_VALUE * ledBands) cumulativeValue = MAX_BAND_VALUE * ledBands;
+
+    int intensity = map(cumulativeValue, 0, MAX_BAND_VALUE * ledBands, 0, 255);
+
+    strip.setPixelColor(i, strip.Color(intensity, random(0, intensity), 255 - intensity));
+  }
+
   strip.show();
+}
+
+void spectrumEqualizer() {
+}
+
+void centerEqualizer() {
+}
+
+void pulseEqualizer() {
+}
+
+void waterfallEqualizer() {
 }
